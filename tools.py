@@ -9,7 +9,7 @@ from typing import Any, Callable
 ROOT = Path(__file__).resolve().parent
 DESIGN_DIR = (ROOT / "design_samples").resolve()
 WORKSPACE = (ROOT / "workspace").resolve()
-_last_test_output = "No tests have been run yet."
+_last_test_output, _last_test_failed = "No tests have been run yet.", False
 
 
 def _inside(path: Path, directory: Path) -> bool:
@@ -41,7 +41,7 @@ def _write_file(args: dict[str, Any]) -> str:
 
 
 def _run_tests(_: dict[str, Any]) -> str:
-    global _last_test_output
+    global _last_test_output, _last_test_failed
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "pytest", "-q"], cwd=WORKSPACE, capture_output=True,
@@ -49,15 +49,20 @@ def _run_tests(_: dict[str, Any]) -> str:
         )
         output = ((proc.stdout or "") + (proc.stderr or "")).strip()
         output = output or f"pytest produced no output (exit {proc.returncode})."
-        _last_test_output = f"{output}\n[exit code: {proc.returncode}]"
+        _last_test_failed = proc.returncode != 0
+        _last_test_output = f"{'TESTS_FAILED' if _last_test_failed else 'TESTS_PASSED'} (exit {proc.returncode})\n{output}"
     except subprocess.TimeoutExpired:
-        _last_test_output = "ERROR: pytest timed out after 30 seconds."
+        _last_test_failed = True
+        _last_test_output = "TESTS_FAILED (timeout)\nERROR: pytest timed out after 30 seconds."
     except Exception as exc:
-        _last_test_output = f"ERROR: could not run pytest: {type(exc).__name__}: {exc}"
+        _last_test_failed = True
+        _last_test_output = f"TESTS_FAILED (runner error)\nERROR: could not run pytest: {type(exc).__name__}: {exc}"
     return _last_test_output
 
 
 def _read_error(_: dict[str, Any]) -> str:
+    if not _last_test_failed:
+        return "No failing tests: the last test run passed or tests have not run yet."
     return _last_test_output
 
 
@@ -101,6 +106,6 @@ TOOLS = [
           {"path": {"type": "string", "description": "Relative path under workspace/, e.g. greeting.py."},
            "content": {"type": "string", "description": "Complete file content to write."}},
           ["path", "content"]),
-    _tool("run_tests", "Run `python -m pytest -q` in workspace/; return stdout + stderr (30s timeout).", {}, []),
-    _tool("read_error", "Return the most recent pytest output to inspect failures.", {}, []),
+    _tool("run_tests", "Run all generated pytest tests in workspace/; return pass/fail status, stdout and stderr (30s timeout).", {}, []),
+    _tool("read_error", "Return the most recent failing pytest output; use it to distinguish implementation bugs from wrong test expectations.", {}, []),
 ]

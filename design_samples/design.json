@@ -1,15 +1,119 @@
 {
-  "module": "greeting",
-  "function": {
-    "name": "greet",
-    "description": "Return exactly 'Hello, <name>!' for the given name.",
-    "input": [
-      {
-        "name": "name",
-        "type": "string",
-        "description": "The person's name."
+  "requirement_id": "REQ-MOTOR-001",
+  "module": "motor_controller",
+  "class": "MotorController",
+  "description": "A safety-interlocked three-state motor controller with temperature monitoring.",
+  "initial_state": "IDLE",
+  "states": [
+    {
+      "id": "ST-001",
+      "name": "IDLE",
+      "description": "Motor is stopped; start is allowed only at a safe temperature."
+    },
+    {
+      "id": "ST-002",
+      "name": "RUNNING",
+      "description": "Motor is energized; over-temperature must latch a fault."
+    },
+    {
+      "id": "ST-003",
+      "name": "FAULT",
+      "description": "Fault is latched; start is forbidden until a safe reset."
+    }
+  ],
+  "transitions": [
+    {
+      "id": "TR-001",
+      "trigger": "start",
+      "from": "IDLE",
+      "to": "RUNNING",
+      "condition": "temperature <= 80"
+    },
+    {
+      "id": "TR-002",
+      "trigger": "stop",
+      "from": "RUNNING",
+      "to": "IDLE",
+      "condition": "always"
+    },
+    {
+      "id": "TR-003",
+      "trigger": "update_temperature",
+      "from": ["IDLE", "RUNNING"],
+      "to": "FAULT",
+      "condition": "value > 80"
+    },
+    {
+      "id": "TR-004",
+      "trigger": "reset",
+      "from": "FAULT",
+      "to": "IDLE",
+      "condition": "temperature <= 80"
+    }
+  ],
+  "constraints": [
+    {
+      "id": "CN-001",
+      "description": "In FAULT, start() must raise SafetyInterlockError and state must remain FAULT."
+    },
+    {
+      "id": "CN-002",
+      "description": "Any temperature above 80 must immediately latch FAULT from IDLE or RUNNING."
+    },
+    {
+      "id": "CN-003",
+      "description": "reset() is legal only in FAULT and only when temperature <= 80; otherwise raise SafetyInterlockError and remain FAULT."
+    },
+    {
+      "id": "CN-004",
+      "description": "start() is legal only in IDLE; any other state must raise InvalidTransitionError."
+    },
+    {
+      "id": "CN-005",
+      "description": "stop() is legal only in RUNNING; any other state must raise InvalidTransitionError."
+    }
+  ],
+  "interface": {
+    "constructor": {
+      "signature": "MotorController(initial_temperature: float = 25.0)",
+      "behavior": "Set temperature and start in IDLE; if initial_temperature > 80, latch FAULT immediately."
+    },
+    "properties": {
+      "state": "str: IDLE, RUNNING or FAULT",
+      "temperature": "float"
+    },
+    "methods": {
+      "start": {
+        "returns": "None",
+        "raises": ["InvalidTransitionError", "SafetyInterlockError"]
+      },
+      "stop": {
+        "returns": "None",
+        "raises": ["InvalidTransitionError"]
+      },
+      "update_temperature": {
+        "parameters": {"value": "float"},
+        "returns": "str: the resulting state",
+        "raises": ["ValueError"]
+      },
+      "reset": {
+        "returns": "None",
+        "raises": ["SafetyInterlockError"]
       }
-    ],
-    "output": "string"
-  }
+    }
+  },
+  "exceptions": [
+    {"name": "InvalidTransitionError", "base": "RuntimeError"},
+    {"name": "SafetyInterlockError", "base": "RuntimeError"}
+  ],
+  "acceptance_criteria": [
+    {"id": "AC-001", "description": "MotorController() starts in IDLE at 25.0 degrees."},
+    {"id": "AC-002", "description": "start() from IDLE at a safe temperature moves to RUNNING."},
+    {"id": "AC-003", "description": "stop() from RUNNING moves to IDLE."},
+    {"id": "AC-004", "description": "update_temperature(81) from RUNNING latches FAULT."},
+    {"id": "AC-005", "description": "start() in FAULT raises SafetyInterlockError and state stays FAULT."},
+    {"id": "AC-006", "description": "reset() in FAULT at temperature 81 raises SafetyInterlockError and state stays FAULT."},
+    {"id": "AC-007", "description": "reset() in FAULT at temperature 25 moves to IDLE."},
+    {"id": "AC-008", "description": "MotorController(81) starts directly in FAULT."}
+  ]
 }

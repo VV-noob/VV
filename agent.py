@@ -9,30 +9,34 @@ from tools import TOOLS, execute_tool
 
 sys.stdout.reconfigure(encoding="utf-8")
 MAX_STEPS = 10
-SYSTEM_PROMPT = """你是一个编程 Agent，目标是根据 design.json 生成代码并通过 pytest 测试。
-必须按顺序工作：先调用 read_design 读取设计；再调用 write_file 写入 workspace/；
-然后调用 run_tests 验证。如果测试失败，调用 read_error 查看错误，再修改代码并重测。
-只使用提供的工具；不要重复完全相同的失败调用；最多执行 10 步。
-测试通过后不要再调用工具，直接输出简短最终答复。"""
+SYSTEM_PROMPT = """你是工业级 Python 编程 Agent，目标是把 design.json 实现为可验证的类状态机。
+1. 必须先调用 read_design，提取 requirement_id、states、transitions、constraints、接口、异常和验收标准。
+2. 编写业务代码：必须用 Class 实现显式状态机；类名、方法、异常严格遵循设计；每个状态、转换和约束处写 `# [Trace: <requirement_id>/<ID>]` 追溯注释。
+3. 必须在 workspace/ 生成当前设计的 pytest 测试，覆盖初始状态、每条合法转换和每条约束/异常路径；若存在上一轮遗留测试，用 write_file 覆盖为当前测试，禁止依赖旧测试通过。
+4. 运行 run_tests。失败时先 read_error，根据断言和堆栈判断是业务实现错误还是测试预期错误；修复根因，必要时重构，禁止删除测试、放宽断言或削弱安全约束。
+5. 只有测试全部通过才能 Finish；最终答复汇总生成文件、测试数和追溯覆盖。最多 10 步，不要重复完全相同的失败调用。
+"""
 
 MOCK_TRACE = [
     (
-        "先读取设计规格，确认模块名、函数签名和输出格式。",
+        "读取工业设计，提取状态机、约束和追溯 ID。",
         'read_design({"path": "design_samples/design.json"})',
-        '{"module": "greeting", "function": {"name": "greet", "description": "Return exactly '
-        "'Hello, <name>!' for the given name.\", \"input\": [{\"name\": \"name\", \"type\": \"string\"}], \"output\": \"string\"}}",
+        '{"requirement_id": "REQ-MOTOR-001", "class": "MotorController", "states": ["IDLE", "RUNNING", "FAULT"], "transitions": 4, "constraints": 5}',
     ),
     (
-        "设计要求 greeting.greet(name) 返回 Hello, <name>!，写入实现。",
-        'write_file({"path": "greeting.py", "content": "def greet(name: str) -> str:\\n'
-        '    return f\\"Hello, {name}!\\"\\n"})',
-        "OK: wrote greeting.py (58 chars)",
+        "用 Class 实现状态机，并把转换和约束绑定到追溯注释。",
+        'write_file({"path": "motor_controller.py", "content": "<MotorController + # [Trace: REQ-MOTOR-001/...]>"})',
+        "OK: wrote motor_controller.py (5115 chars)",
     ),
     (
-        "实现已写入，运行 pytest 验证行为。",
+        "生成覆盖初始状态、合法转换和安全约束的测试。",
+        'write_file({"path": "test_motor_controller.py", "content": "<31 pytest cases for AC-001..AC-008>"})',
+        "OK: wrote test_motor_controller.py (8826 chars)",
+    ),
+    (
+        "运行完整测试套件并确认安全约束。",
         "run_tests({})",
-        "..                                                                       [100%]\n"
-        "2 passed in 0.01s\n[exit code: 0]",
+        "TESTS_PASSED (exit 0)\n31 passed in 0.04s",
     ),
 ]
 
@@ -43,7 +47,7 @@ def run_mock() -> None:
         print(f"[Step {step}] Thought: {thought}")
         print(f"Action: {action}")
         print(f"Observation: {observation}\n")
-    print("Finish: 已根据设计实现 greet，2 个 pytest 测试全部通过。")
+    print("Finish: 已生成 MotorController 和测试；31 个测试通过，覆盖 4 条转换与 5 条安全约束。")
 
 
 def run_real() -> None:
@@ -55,7 +59,7 @@ def run_real() -> None:
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": "设计文件是 design_samples/design.json，测试在 workspace/。请开始实现并验证。"},
+        {"role": "user", "content": "设计文件是 design_samples/design.json。workspace/ 中已有上一轮参考实现和测试；请以当前设计为准重新生成并验证，必要时覆盖参考文件，确保 pytest 只验证 REQ-MOTOR-001。"},
     ]
 
     for step in range(MAX_STEPS):

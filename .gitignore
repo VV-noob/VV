@@ -3,18 +3,24 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+*.egg-info/
+build/
+dist/
 
 # Test / tool caches
 .pytest_cache/
 pytest-cache-files-*/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
 
 # Local secrets
 .env
 .env.*
 
-# Agent sandbox: keep tests, ignore generated implementation and caches
-/workspace/*
-!/workspace/test_greeting.py
+# Logs
+*.log
 
 # OS / editors
 .DS_Store
