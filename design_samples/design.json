@@ -1,0 +1,15 @@
+{
+  "module": "greeting",
+  "function": {
+    "name": "greet",
+    "description": "Return exactly 'Hello, <name>!' for the given name.",
+    "input": [
+      {
+        "name": "name",
+        "type": "string",
+        "description": "The person's name."
+      }
+    ],
+    "output": "string"
+  }
+}

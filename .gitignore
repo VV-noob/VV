@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Test / tool caches
+.pytest_cache/
+pytest-cache-files-*/
+
+# Local secrets
+.env
+.env.*
+
+# Agent sandbox: keep tests, ignore generated implementation and caches
+/workspace/*
+!/workspace/test_greeting.py
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
