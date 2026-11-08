@@ -263,20 +263,6 @@ Remove-Item .\workspace\motor_controller.py, .\workspace\test_motor_controller.p
 .\.venv\Scripts\python.exe agent.py
 ```
 
-## 提交到 GitHub
-
-```powershell
-git add .
-git commit -m "feat: upgrade design-to-code agent for industrial state machines"
-git push
-```
-
-提交前确认 `.env`、`.venv/`、`__pycache__/`、`.pytest_cache/` 和 API Key 没有被加入暂存区：
-
-```powershell
-git status --short
-```
-
 ## 与后续毕设的衔接
 
 - `read_design` 是“设计理解”的入口。后续可以替换为更丰富的设计模型、接口契约、UML 或需求文档解析，同时保持 ReAct 主循环不变。
