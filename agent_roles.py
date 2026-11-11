@@ -18,6 +18,7 @@ from ui import (
 )
 
 DESIGN_PATH = "design_samples/design.json"
+MAX_DESIGNER_STEPS = 3
 MAX_CODER_STEPS = 6
 
 
@@ -77,48 +78,80 @@ class BaseAgent:
 
 
 class DesignerAgent(BaseAgent):
-    """Read and interpret the structured design."""
+    """Read and interpret the structured design when the request requires it."""
 
     name = "DesignerAgent"
     system_prompt = """你是设计理解 Agent。你不写代码，也不修改文件。
-结合本轮用户需求和原始设计，提取并整理以下内容：
-1. requirement_id 与模块/类名；
-2. 状态、转换、触发条件和安全不变量；
-3. 接口、异常和验收标准；
-4. 可用于代码追溯的 ID 列表。
-输出紧凑、完整的结构化设计摘要，明确标出安全关键点。"""
+先根据本轮用户需求判断设计来源：
+- 如果用户明确要求“按 design_samples/design.json 实现/检查”，必须调用 read_design；调用前不要假设设计内容。
+- 如果用户提出具体的新需求（如冒泡排序、计算器），不要读取 design.json，直接根据用户需求生成设计摘要。
+禁止把旧设计（例如 MotorController）套用到无关需求上。
+摘要至少包含：目标、输入输出、边界条件、验收标准和可追溯 ID（如果用户或设计文件提供了 ID）。"""
     allowed_tools = ("read_design",)
 
-    def run(self, state: dict[str, Any]) -> dict[str, Any]:
-        print_banner(self.name, "设计理解：读取并提取约束")
-        print_action("read_design", {"path": DESIGN_PATH})
-        design = execute_tool("read_design", {"path": DESIGN_PATH})
-        print_observation(design, label="Design read")
-        if design.startswith("ERROR:"):
-            state["design_content"] = design
-            print_feedback(design, "error")
-            return state
+    @staticmethod
+    def _design_file_requested(requirement: str) -> bool:
+        markers = (
+            "design_samples", "design.json", "设计文件", "按设计",
+            "根据设计", "现有设计", "读取设计",
+        )
+        return any(marker in requirement for marker in markers)
 
+    def run(self, state: dict[str, Any]) -> dict[str, Any]:
+        requirement = state.get("user_requirement", "(未提供)")
+        print_banner(self.name, "设计理解：根据本轮需求选择设计来源")
         messages = [
             {"role": "system", "content": self.system_prompt},
             {
                 "role": "user",
                 "content": (
-                    f"本轮用户需求：\n{state.get('user_requirement', '(未提供)')}\n\n"
-                    f"原始设计如下，请输出设计摘要：\n\n{design}"
+                    f"本轮用户需求：\n{requirement}\n\n"
+                    "如果明确要求按设计文件实现，请调用 read_design；"
+                    "否则直接生成本轮需求对应的设计摘要。"
                 ),
             },
         ]
-        try:
-            message = self._chat(messages)
-            analysis = message.content or "(empty design analysis)"
-        except Exception as exc:
-            analysis = f"LLM design analysis failed: {type(exc).__name__}: {exc}"
 
+        summary = ""
+        read_design_used = False
+        allow_design_tool = self._design_file_requested(requirement)
+        tools = self._tool_schemas("read_design") if allow_design_tool else None
+        for step in range(MAX_DESIGNER_STEPS):
+            try:
+                message = self._chat(messages, tools=tools)
+            except Exception as exc:
+                print_feedback(f"DesignerAgent LLM failed: {type(exc).__name__}: {exc}", "error")
+                break
+            if message.content:
+                summary = message.content
+            if not message.tool_calls:
+                break
+
+            messages.append(self._assistant_message(message))
+            for call in message.tool_calls:
+                raw = call.function.arguments or "{}"
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    print_action(call.function.name, parsed)
+                else:
+                    print_raw_action(call.function.name, raw)
+                result = self._execute_call(call)
+                print_observation(result, label="read_design")
+                messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+                if not result.startswith("ERROR:"):
+                    read_design_used = True
+
+        if not summary:
+            summary = f"根据用户需求生成设计摘要：{requirement}"
+        source = "design.json" if read_design_used else "用户需求动态生成"
         state["design_content"] = (
-            f"=== RAW DESIGN ===\n{design}\n\n"
-            f"=== DESIGN ANALYSIS ===\n{analysis}"
+            f"=== USER REQUIREMENT ===\n{requirement}\n\n"
+            f"=== DESIGN SOURCE: {source} ===\n{summary}"
         )
+        print(f"[{self.name}] 设计来源：{source}")
         print(f"[{self.name}] design_content 已更新（{len(state['design_content'])} chars）")
         return state
 
@@ -128,12 +161,13 @@ class PlannerAgent(BaseAgent):
 
     name = "PlannerAgent"
     system_prompt = """你是任务规划 Agent。你不写代码，也不修改文件。
-根据设计摘要生成可执行的开发步骤，必须覆盖：
-1. 业务类与状态机实现；
-2. 安全约束和异常路径；
-3. pytest 测试编写；
-4. 运行测试与失败修复；
-5. 追溯注释检查。
+严格只依据本轮 user_requirement 和 design_content 制定开发步骤：
+1. 实现当前需求所需的功能；
+2. 为当前需求编写 pytest 测试；
+3. 运行测试并修复失败；
+4. 如果设计摘要包含 Trace ID，再检查追溯注释。
+禁止读取或假设 design.json 的内容；
+禁止把旧设计（例如 MotorController）套用到无关需求上。
 只输出严格的 JSON 字符串数组，不要输出解释、Markdown 或代码块。"""
     allowed_tools = ()
 
@@ -157,10 +191,10 @@ class PlannerAgent(BaseAgent):
             plan = []
         if not plan:
             plan = [
-                "实现设计中的业务类和状态机",
-                "为每条转换和安全约束编写 pytest 测试",
+                "实现当前用户需求对应的业务代码",
+                "为当前需求编写 pytest 测试",
                 "运行 pytest，分析失败并修复",
-                "检查代码中的追溯注释",
+                "如果设计摘要包含 Trace ID，检查追溯注释",
             ]
         state["plan"] = plan
         print(f"[{self.name}] 生成 {len(plan)} 个步骤：")
@@ -192,12 +226,15 @@ class CoderAgent(BaseAgent):
     """Write or repair implementation code and its tests."""
 
     name = "CoderAgent"
-    system_prompt = """你是一个执行者。你不做需求分析，也不改变设计目标。
-根据设计摘要和计划，使用 write_file 在 workspace/ 下写 Python 业务代码和 pytest 测试。
+    system_prompt = """你是一个执行者。你不做需求分析，也不改变本轮设计目标。
+根据本轮用户需求和设计摘要，使用 write_file 在 workspace/ 下写 Python 业务代码和 pytest 测试。
 必须通过 write_file 真正写入文件，不能只在回复里展示代码。
-至少写入一个业务 .py 文件和一个 test_*.py 测试文件。
+注意：write_file 的 path 是相对于 workspace/ 的，不要写 workspace/ 前缀。
+至少写入一个业务文件（例如 path='solution.py'）和一个测试文件（例如 path='tests/test_solution.py'）；
+workspace/pytest.ini 的 testpaths=tests 只收集 tests/ 目录。
+不要套用旧任务或旧设计；当前需求与 design.json 无关时，不要生成 MotorController。
 如果提供了上一轮 test_result，先定位根因再修改；不得通过删除测试或放宽断言来刷绿。
-业务代码中保留 [Trace: REQ-.../ID] 追溯注释。"""
+只有在设计摘要明确提供 Trace ID 时，才添加 [Trace: ...] 注释，不要虚构。"""
     allowed_tools = ("write_file",)
 
     def run(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -259,6 +296,11 @@ class CoderAgent(BaseAgent):
             for path, content in written
             if path.endswith(".py") and not Path(path).name.startswith("test_")
         ]
+        if written:
+            files_written = state.setdefault("files_written", [])
+            for path, _ in written:
+                if path and path not in files_written:
+                    files_written.append(path)
         if implementations:
             state["code_content"] = implementations[-1][1]
             print(f"[{self.name}] code_content 已更新（{len(state['code_content'])} chars）")
