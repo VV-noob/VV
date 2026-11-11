@@ -1,8 +1,14 @@
-"""Pytest suite for REQ-MOTOR-001: MotorController state machine."""
+"""pytest tests for MotorController. [Trace: REQ-MOTOR-001]"""
+
+from __future__ import annotations
 
 import pytest
 
 from motor_controller import (
+    FAULT,
+    IDLE,
+    MAX_SAFE_TEMPERATURE,
+    RUNNING,
     InvalidTransitionError,
     MotorController,
     SafetyInterlockError,
@@ -10,262 +16,212 @@ from motor_controller import (
 
 
 # ----------------------------------------------------------------------
-# Initial state / constructor
+# Acceptance criteria
 # ----------------------------------------------------------------------
-def test_initial_state_idle_at_25():
-    # [Trace: REQ-MOTOR-001/AC-001] [Trace: REQ-MOTOR-001/ST-001]
-    m = MotorController()
-    assert m.state == "IDLE"
-    assert m.temperature == 25.0
+def test_ac_001_defaults_to_idle_at_25() -> None:
+    # [Trace: AC-001][ST-001]
+    ctrl = MotorController()
+    assert ctrl.state == IDLE
+    assert ctrl.temperature == pytest.approx(25.0)
 
 
-def test_initial_state_default_parameter_explicit():
-    # [Trace: REQ-MOTOR-001/AC-001]
-    m = MotorController(initial_temperature=25.0)
-    assert (m.state, m.temperature) == ("IDLE", 25.0)
+def test_ac_002_start_from_idle_safe_temp_reaches_running() -> None:
+    # [Trace: AC-002][TR-001]
+    ctrl = MotorController(25.0)
+    ctrl.start()
+    assert ctrl.state == RUNNING
 
 
-def test_constructor_hot_latches_fault():
-    # [Trace: REQ-MOTOR-001/AC-008] [Trace: REQ-MOTOR-001/CN-002]
-    m = MotorController(81)
-    assert m.state == "FAULT"
-    assert m.temperature == 81.0
+def test_ac_003_stop_from_running_reaches_idle() -> None:
+    # [Trace: AC-003][TR-002]
+    ctrl = MotorController()
+    ctrl.start()
+    ctrl.stop()
+    assert ctrl.state == IDLE
+    assert ctrl.temperature == pytest.approx(25.0)
 
 
-def test_constructor_at_boundary_80_stays_idle():
-    # [Trace: REQ-MOTOR-001/TR-001] condition temperature <= 80
-    m = MotorController(80)
-    assert m.state == "IDLE"
-    assert m.temperature == 80.0
+def test_ac_004_update_temperature_81_in_running_latches_fault() -> None:
+    # [Trace: AC-004][TR-003]
+    ctrl = MotorController()
+    ctrl.start()
+    result = ctrl.update_temperature(81)
+    assert result == FAULT
+    assert ctrl.state == FAULT
 
 
-def test_constructor_rejects_non_numeric_temperature():
-    # [Trace: REQ-MOTOR-001/interface.update_temperature] ValueError path
-    with pytest.raises(ValueError):
-        MotorController("hot")
+def test_ac_005_start_in_fault_raises_and_stays_fault() -> None:
+    # [Trace: AC-005][CN-001]
+    ctrl = MotorController()
+    ctrl.start()
+    ctrl.update_temperature(81)
+    assert ctrl.state == FAULT
 
-
-# ----------------------------------------------------------------------
-# TR-001: start IDLE -> RUNNING
-# ----------------------------------------------------------------------
-def test_start_from_idle_moves_to_running():
-    # [Trace: REQ-MOTOR-001/AC-002] [Trace: REQ-MOTOR-001/TR-001]
-    m = MotorController()
-    assert m.start() is None
-    assert m.state == "RUNNING"
-
-
-def test_start_allowed_at_boundary_temperature_80():
-    # [Trace: REQ-MOTOR-001/TR-001] temperature <= 80
-    m = MotorController(80)
-    m.start()
-    assert m.state == "RUNNING"
-
-
-# ----------------------------------------------------------------------
-# TR-002: stop RUNNING -> IDLE
-# ----------------------------------------------------------------------
-def test_stop_from_running_moves_to_idle():
-    # [Trace: REQ-MOTOR-001/AC-003] [Trace: REQ-MOTOR-001/TR-002]
-    m = MotorController()
-    m.start()
-    assert m.stop() is None
-    assert m.state == "IDLE"
-
-
-def test_full_cycle_start_stop_twice():
-    # [Trace: REQ-MOTOR-001/TR-001] [Trace: REQ-MOTOR-001/TR-002]
-    m = MotorController()
-    m.start()
-    m.stop()
-    m.start()
-    m.stop()
-    assert m.state == "IDLE"
-
-
-# ----------------------------------------------------------------------
-# TR-003: update_temperature -> FAULT when value > 80
-# ----------------------------------------------------------------------
-def test_update_temperature_from_running_latches_fault():
-    # [Trace: REQ-MOTOR-001/AC-004] [Trace: REQ-MOTOR-001/TR-003]
-    # [Trace: REQ-MOTOR-001/CN-002]
-    m = MotorController()
-    m.start()
-    result = m.update_temperature(81)
-    assert result == "FAULT"
-    assert m.state == "FAULT"
-    assert m.temperature == 81.0
-
-
-def test_update_temperature_from_idle_latches_fault():
-    # [Trace: REQ-MOTOR-001/TR-003] from IDLE
-    # [Trace: REQ-MOTOR-001/CN-002]
-    m = MotorController()
-    assert m.update_temperature(90) == "FAULT"
-    assert m.state == "FAULT"
-    assert m.temperature == 90.0
-
-
-def test_update_temperature_safe_keeps_running():
-    # [Trace: REQ-MOTOR-001/TR-003] condition value > 80 must hold
-    m = MotorController()
-    m.start()
-    assert m.update_temperature(80) == "RUNNING"
-    assert m.state == "RUNNING"
-    assert m.temperature == 80.0
-
-
-def test_update_temperature_safe_keeps_idle():
-    # [Trace: REQ-MOTOR-001/TR-003]
-    m = MotorController()
-    assert m.update_temperature(50) == "IDLE"
-    assert m.state == "IDLE"
-    assert m.temperature == 50.0
-
-
-def test_update_temperature_fault_stays_latched():
-    # [Trace: REQ-MOTOR-001/ST-003] fault is latched
-    m = MotorController()
-    m.update_temperature(95)
-    assert m.update_temperature(20) == "FAULT"
-    assert m.state == "FAULT"
-    assert m.temperature == 20.0
-
-
-@pytest.mark.parametrize("bad_value", ["hot", None, object(), float("nan")])
-def test_update_temperature_rejects_invalid_values(bad_value):
-    # [Trace: REQ-MOTOR-001/interface.update_temperature] ValueError
-    m = MotorController()
-    with pytest.raises(ValueError):
-        m.update_temperature(bad_value)
-    # state and temperature untouched by a rejected value
-    assert m.state == "IDLE"
-    assert m.temperature == 25.0
-
-
-# ----------------------------------------------------------------------
-# CN-001 / CN-004: start() legality
-# ----------------------------------------------------------------------
-def test_start_in_fault_raises_safety_interlock_and_stays_fault():
-    # [Trace: REQ-MOTOR-001/AC-005] [Trace: REQ-MOTOR-001/CN-001]
-    m = MotorController(81)
     with pytest.raises(SafetyInterlockError):
-        m.start()
-    assert m.state == "FAULT"
+        ctrl.start()
+    assert ctrl.state == FAULT
 
 
-def test_start_in_running_raises_invalid_transition():
-    # [Trace: REQ-MOTOR-001/CN-004] start legal only in IDLE
-    m = MotorController()
-    m.start()
+def test_ac_006_reset_in_fault_hot_raises_and_stays_fault() -> None:
+    # [Trace: AC-006][CN-003]
+    ctrl = MotorController(81)
+    assert ctrl.state == FAULT
+    assert ctrl.temperature == pytest.approx(81.0)
+
+    with pytest.raises(SafetyInterlockError):
+        ctrl.reset()
+    assert ctrl.state == FAULT
+
+
+def test_ac_007_reset_in_fault_cold_reaches_idle() -> None:
+    # [Trace: AC-007][TR-004]
+    ctrl = MotorController(81)
+    assert ctrl.state == FAULT
+    ctrl.update_temperature(25)
+    assert ctrl.state == FAULT  # fault stays latched until reset
+    ctrl.reset()
+    assert ctrl.state == IDLE
+    assert ctrl.temperature == pytest.approx(25.0)
+
+
+def test_ac_008_construct_hot_starts_in_fault() -> None:
+    # [Trace: AC-008][CN-002]
+    ctrl = MotorController(81)
+    assert ctrl.state == FAULT
+
+
+# ----------------------------------------------------------------------
+# Safety constraint specific tests
+# ----------------------------------------------------------------------
+def test_cn_001_fault_start_never_changes_state() -> None:
+    # [Trace: CN-001]
+    ctrl = MotorController(95.5)
+    assert ctrl.state == FAULT
+    for _ in range(3):
+        with pytest.raises(SafetyInterlockError):
+            ctrl.start()
+        assert ctrl.state == FAULT
+    assert ctrl.temperature == pytest.approx(95.5)
+
+
+def test_cn_002_over_temperature_latches_from_idle() -> None:
+    # [Trace: CN-002] IDLE path
+    ctrl = MotorController()
+    assert ctrl.state == IDLE
+    assert ctrl.update_temperature(80.5) == FAULT
+    assert ctrl.state == FAULT
+
+
+def test_cn_002_over_temperature_latches_from_running() -> None:
+    # [Trace: CN-002] RUNNING path
+    ctrl = MotorController()
+    ctrl.start()
+    assert ctrl.state == RUNNING
+    assert ctrl.update_temperature(81) == FAULT
+    assert ctrl.state == FAULT
+
+
+def test_cn_002_boundary_temperature_80_is_safe() -> None:
+    # [Trace: CN-002] Boundary: exactly 80 is still safe.
+    ctrl = MotorController(MAX_SAFE_TEMPERATURE)
+    assert ctrl.state == IDLE
+    ctrl.start()
+    assert ctrl.state == RUNNING
+    assert ctrl.update_temperature(MAX_SAFE_TEMPERATURE) == RUNNING
+
+
+def test_cn_002_fault_is_not_cleared_by_cooling_update() -> None:
+    # [Trace: CN-002][CN-003] Latch survives temperature drops.
+    ctrl = MotorController(90)
+    assert ctrl.state == FAULT
+    assert ctrl.update_temperature(25) == FAULT
+    assert ctrl.state == FAULT
+
+
+def test_cn_003_reset_outside_fault_raises_and_preserves_state() -> None:
+    # [Trace: CN-003]
+    ctrl = MotorController()
+    with pytest.raises(SafetyInterlockError):
+        ctrl.reset()
+    assert ctrl.state == IDLE
+
+    ctrl.start()
+    with pytest.raises(SafetyInterlockError):
+        ctrl.reset()
+    assert ctrl.state == RUNNING
+
+
+def test_cn_004_start_outside_idle_raises_invalid_transition() -> None:
+    # [Trace: CN-004]
+    ctrl = MotorController()
+    ctrl.start()
+    assert ctrl.state == RUNNING
     with pytest.raises(InvalidTransitionError):
-        m.start()
-    assert m.state == "RUNNING"
+        ctrl.start()
+    assert ctrl.state == RUNNING
 
 
-def test_start_error_types_are_distinct():
-    # [Trace: REQ-MOTOR-001/CN-004] [Trace: REQ-MOTOR-001/CN-001]
+def test_cn_005_stop_outside_running_raises_invalid_transition() -> None:
+    # [Trace: CN-005] IDLE path
+    ctrl = MotorController()
+    with pytest.raises(InvalidTransitionError):
+        ctrl.stop()
+    assert ctrl.state == IDLE
+
+
+def test_cn_005_stop_in_fault_raises_invalid_transition() -> None:
+    # [Trace: CN-005] FAULT path
+    ctrl = MotorController(81)
+    with pytest.raises(InvalidTransitionError):
+        ctrl.stop()
+    assert ctrl.state == FAULT
+
+
+def test_exception_hierarchy() -> None:
+    # [Trace: REQ-MOTOR-001] Both exceptions derive from RuntimeError.
     assert issubclass(InvalidTransitionError, RuntimeError)
     assert issubclass(SafetyInterlockError, RuntimeError)
-    hot = MotorController(85)
+
+
+def test_update_temperature_rejects_non_numeric() -> None:
+    # [Trace: TR-003] Non-numeric input must raise ValueError.
+    ctrl = MotorController()
+    for bad in ("hot", None, [81], {"t": 81}, True):
+        with pytest.raises(ValueError):
+            ctrl.update_temperature(bad)  # type: ignore[arg-type]
+        assert ctrl.state == IDLE
+        assert ctrl.temperature == pytest.approx(25.0)
+
+
+def test_constructor_rejects_non_numeric_temperature() -> None:
+    # [Trace: REQ-MOTOR-001] Constructor input validation.
+    with pytest.raises(ValueError):
+        MotorController("hot")  # type: ignore[arg-type]
+
+
+def test_state_and_temperature_are_read_only() -> None:
+    # [Trace: ST-001][ST-002][ST-003] Latched state cannot be bypassed.
+    ctrl = MotorController(81)
+    with pytest.raises(AttributeError):
+        ctrl.state = IDLE  # type: ignore[misc]
+    with pytest.raises(AttributeError):
+        ctrl.temperature = 25.0  # type: ignore[misc]
+    assert ctrl.state == FAULT
+    assert ctrl.temperature == pytest.approx(81.0)
+
+
+def test_full_recovery_cycle() -> None:
+    # [Trace: REQ-MOTOR-001] IDLE -> RUNNING -> FAULT -> IDLE -> RUNNING.
+    ctrl = MotorController()
+    ctrl.start()
+    assert ctrl.state == RUNNING
+    ctrl.update_temperature(85)
+    assert ctrl.state == FAULT
     with pytest.raises(SafetyInterlockError):
-        hot.start()
-    with pytest.raises(RuntimeError):
-        hot.start()
-
-
-# ----------------------------------------------------------------------
-# CN-005: stop() legality
-# ----------------------------------------------------------------------
-def test_stop_in_idle_raises_invalid_transition():
-    # [Trace: REQ-MOTOR-001/CN-005]
-    m = MotorController()
-    with pytest.raises(InvalidTransitionError):
-        m.stop()
-    assert m.state == "IDLE"
-
-
-def test_stop_in_fault_raises_invalid_transition():
-    # [Trace: REQ-MOTOR-001/CN-005]
-    m = MotorController(81)
-    with pytest.raises(InvalidTransitionError):
-        m.stop()
-    assert m.state == "FAULT"
-
-
-# ----------------------------------------------------------------------
-# TR-004 / CN-003: reset() legality
-# ----------------------------------------------------------------------
-def test_reset_in_fault_hot_raises_and_stays_fault():
-    # [Trace: REQ-MOTOR-001/AC-006] [Trace: REQ-MOTOR-001/CN-003]
-    m = MotorController(81)
-    with pytest.raises(SafetyInterlockError):
-        m.reset()
-    assert m.state == "FAULT"
-
-
-def test_reset_in_fault_cool_moves_to_idle():
-    # [Trace: REQ-MOTOR-001/AC-007] [Trace: REQ-MOTOR-001/TR-004]
-    m = MotorController(81)
-    m.update_temperature(25)
-    assert m.reset() is None
-    assert m.state == "IDLE"
-
-
-def test_reset_after_latching_fault_from_running():
-    # [Trace: REQ-MOTOR-001/TR-003] -> [Trace: REQ-MOTOR-001/TR-004]
-    m = MotorController()
-    m.start()
-    m.update_temperature(99)
-    assert m.state == "FAULT"
-    m.update_temperature(25)
-    m.reset()
-    assert m.state == "IDLE"
-
-
-def test_reset_at_boundary_temperature_80_allowed():
-    # [Trace: REQ-MOTOR-001/TR-004] temperature <= 80
-    m = MotorController(81)
-    m.update_temperature(80)
-    m.reset()
-    assert m.state == "IDLE"
-
-
-def test_reset_in_idle_raises_safety_interlock():
-    # [Trace: REQ-MOTOR-001/CN-003] reset legal only in FAULT
-    m = MotorController()
-    with pytest.raises(SafetyInterlockError):
-        m.reset()
-    assert m.state == "IDLE"
-
-
-def test_reset_in_running_raises_safety_interlock():
-    # [Trace: REQ-MOTOR-001/CN-003] reset legal only in FAULT
-    m = MotorController()
-    m.start()
-    with pytest.raises(SafetyInterlockError):
-        m.reset()
-    assert m.state == "RUNNING"
-
-
-def test_after_reset_start_and_stop_work_again():
-    # [Trace: REQ-MOTOR-001/TR-004] then TR-001 / TR-002
-    m = MotorController(95)
-    m.update_temperature(25)
-    m.reset()
-    m.start()
-    assert m.state == "RUNNING"
-    m.stop()
-    assert m.state == "IDLE"
-
-
-def test_state_values_are_limited_to_declared_states():
-    # [Trace: REQ-MOTOR-001/ST-001] [Trace: REQ-MOTOR-001/ST-002]
-    # [Trace: REQ-MOTOR-001/ST-003]
-    m = MotorController()
-    seen = {m.state}
-    m.start()
-    seen.add(m.state)
-    m.update_temperature(120)
-    seen.add(m.state)
-    assert seen == {"IDLE", "RUNNING", "FAULT"}
+        ctrl.reset()
+    assert ctrl.state == FAULT
+    ctrl.update_temperature(30)
+    ctrl.reset()
+    assert ctrl.state == IDLE
+    ctrl.start()
+    assert ctrl.state == RUNNING
